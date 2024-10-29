@@ -124,13 +124,23 @@ def get_cpu_info():
     return PERSISTENT_CACHE.get("cpu_info", "unknown")
 
 
+torch_musa_available = False
+try:
+    import torch_musa
+    torch_musa_available = True
+except ImportError:
+    pass
+
 def get_gpu_info(index):
     """Return a string with system GPU information, i.e. 'Tesla T4, 15102MiB'."""
-    properties = torch.cuda.get_device_properties(index)
+    if torch_musa_available:
+        properties = torch.musa.get_device_properties(index)
+    else:
+        properties = torch.cuda.get_device_properties(index)
     return f"{properties.name}, {properties.total_memory / (1 << 20):.0f}MiB"
 
 
-def select_device(device="", batch=0, newline=False, verbose=True):
+def select_device(device="musa", batch=0, newline=False, verbose=True):
     """
     Selects the appropriate PyTorch device based on the provided arguments.
 
@@ -167,12 +177,15 @@ def select_device(device="", batch=0, newline=False, verbose=True):
         return device
 
     s = f"Ultralytics {__version__} 🚀 Python-{PYTHON_VERSION} torch-{torch.__version__} "
+    if torch_musa_available:
+        device = "musa"
     device = str(device).lower()
     for remove in "cuda:", "none", "(", ")", "[", "]", "'", " ":
         device = device.replace(remove, "")  # to string, 'cuda:0' -> '0' and '(0, 1)' -> '0,1'
     cpu = device == "cpu"
     mps = device in {"mps", "mps:0"}  # Apple Metal Performance Shaders (MPS)
-    if cpu or mps:
+    musa = device.startswith("musa")  # MUSA GPU
+    if cpu or mps or musa:
         os.environ["CUDA_VISIBLE_DEVICES"] = "-1"  # force torch.cuda.is_available() = False
     elif device:  # non-cpu device requested
         if device == "cuda":
@@ -199,7 +212,7 @@ def select_device(device="", batch=0, newline=False, verbose=True):
                 f"{install}"
             )
 
-    if not cpu and not mps and torch.cuda.is_available():  # prefer GPU if available
+    if not cpu and not mps and not musa and torch.cuda.is_available():  # prefer GPU if available
         devices = device.split(",") if device else "0"  # i.e. "0,1" -> ["0", "1"]
         n = len(devices)  # device count
         if n > 1:  # multi-GPU
@@ -221,6 +234,9 @@ def select_device(device="", batch=0, newline=False, verbose=True):
         # Prefer MPS if available
         s += f"MPS ({get_cpu_info()})\n"
         arg = "mps"
+    elif musa and torch_musa_available:  # prefer MUSA if available
+        s += "MUSA\n"
+        arg = "musa"
     else:  # revert to CPU
         s += f"CPU ({get_cpu_info()})\n"
         arg = "cpu"
